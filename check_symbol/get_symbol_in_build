@@ -1,0 +1,6 @@
+2025-06-02 10:42:09,812 - ForseeFeatureBuilder - INFO - 日志配置完成，将保存在: /disk/lxf/npm_vul_research/xt/Forsee/check_symbol/get_symbol_in_build
+2025-06-02 10:42:09,813 - ForseeFeatureBuilder - INFO - 变量[var]: 类型=ndarray, 形状=(256,)
+2025-06-02 10:42:09,813 - ForseeFeatureBuilder - INFO - 变量[var]: 类型=ndarray, 形状=(50,)
+2025-06-02 10:42:13,467 - ForseeFeatureBuilder - INFO - 日志配置完成，将保存在: /disk/lxf/npm_vul_research/xt/Forsee/check_symbol/get_symbol_in_build
+2025-06-02 10:42:13,467 - ForseeFeatureBuilder - INFO - 变量[var]: 类型=ndarray, 形状=(256,)
+2025-06-02 10:42:13,467 - ForseeFeatureBuilder - INFO - 变量[var]: 类型=ndarray, 形状=(50,)

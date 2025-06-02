@@ -1,7 +1,7 @@
 import codesecurity.tasks.code_authorship_attribution.preprocessing as caa_data
 import codesecurity.tasks.code_authorship_attribution.caches_manager as caa_caches
 import codesecurity.tasks.code_authorship_attribution.preprocessing as cacc_preprocess
-
+from codesecurity.utils.check_symbol_log import get_symbol_logger
 
 import os
 import torch
@@ -12,6 +12,7 @@ import sklearn.preprocessing as skp
 import numpy as np
 
 import torch.utils.data as torchdata
+logger = get_symbol_logger("symbol_module",log_file="symbol_module.log")
 class ForseeDataset(torchdata.Dataset):
     def __init__(self,features:caa_data.ForseeFeatures) -> None:
         super().__init__()
@@ -39,7 +40,7 @@ class ForseeDataset(torchdata.Dataset):
         #std_layout=self.layout_scalar.transform([sample.layout])[0]
         #std_lexical=self.lexical_scalar.transform([sample.lexical])[0]
         #std_syntactic=self.syntactic_scalar.transform([sample.syntactic])[0]
-        return sample.layout,sample.lexical,sample.syntactic,sample.label
+        return sample.layout,sample.lexical,sample.syntactic,sample.symbol,sample.label
         
     def __len__(self):
         return len(self.features.samples)
@@ -122,7 +123,27 @@ class ForseeLayoutDataset(torchdata.Dataset):
         
     def __len__(self):
         return len(self.forsee_dataset)
-    
+
+class ForseeSymbolDataset(torchdata.Dataset):
+    def __init__(self, forsee_dataset:ForseeDataset) -> None:
+        super().__init__()
+        self.forsee_dataset = forsee_dataset
+        
+    def __getitem__(self, index):
+        # 修改确保返回的是张量而不是列表
+        v, label = self.forsee_dataset[index][:-1], self.forsee_dataset[index][-1]
+        # logger.var_info(v[3],"v[3]")
+        # logger.var_info(label,"label")
+        return v[3], label
+        # if isinstance(v[3], list):
+        #     symbol_tensor = torch.tensor(v[3], dtype=torch.float32)
+        # elif isinstance(v[3], torch.Tensor):
+        #     symbol_tensor = v[3].float()
+        # return symbol_tensor, label
+        
+    def __len__(self):
+        return len(self.forsee_dataset)
+
 class ForseeLexicalDataset(torchdata.Dataset):
     def __init__(self,forsee_dataset:ForseeDataset) -> None:
         super().__init__()
@@ -161,6 +182,50 @@ def layout_enhance(layout_tensors:list,threshold=4):
             layout_tensor[j,:origin_length-start]=temp
             layout_tensor[j,origin_length-start:]=0
     return layout_tensors
+# 定义symbol_enhance
+def symbol_enhance(symbol_tensors: list, threshold=0.1):
+    """
+    对符号特征进行数据增强
+    
+    Args:
+        symbol_tensors: 符号特征张量列表
+        threshold: 扰动阈值
+    
+    Returns:
+        增强后的符号特征张量
+    """
+    for tensor in symbol_tensors:
+        if len(tensor.shape) == 0:
+            continue
+            
+        # 创建扰动掩码矩阵
+        mask = torch.rand(tensor.shape) < threshold
+        
+        # 区分不同类型的特征
+        for i in range(tensor.shape[0]):
+            for j in range(tensor.shape[1]):
+                if not mask[i, j]:
+                    continue
+                    
+                feature_value = tensor[i, j].item()
+                
+                # 比例特征 (索引1-6, 8-10, 12-14, 16, 18-21)
+                ratio_indices = [1, 2, 3, 4, 5, 8, 9, 10, 12, 13, 14, 16, 18, 19, 20, 21]
+                if j in ratio_indices:
+                    # 对比例特征进行小幅度随机扰动，保持在0-1范围内
+                    noise = (torch.rand(1).item() - 0.5) * 0.2  # 生成-0.1到0.1之间的噪声
+                    tensor[i, j] = torch.clamp(tensor[i, j] + noise, 0.0, 1.0)
+                
+                # 总数特征 (索引0, 7, 11, 15, 17, 22)
+                else:
+                    # 对计数特征进行随机上下波动
+                    if feature_value > 0:
+                        # 对非零计数值进行扰动
+                        noise_factor = 1.0 + (torch.rand(1).item() - 0.5) * 0.4  # 0.8到1.2之间的乘性噪声
+                        tensor[i, j] = tensor[i, j] * noise_factor
+    
+    return symbol_tensors
+
 
 def lexical_enhance(lexical_tensors:list,threshold=0.1):
     for lexical_tensor in lexical_tensors:
@@ -178,12 +243,21 @@ def syntactic_enhance(syntactic_tensors:torch.Tensor,threshold=0.1):
     return syntactic_tensors
 
 def combine_enhance(inputs):
-    layout_tensor,lexical_tensor,syntactic_tensor=inputs
-    layout_tensor=layout_enhance([layout_tensor])
-    lexical_tensor=lexical_enhance([lexical_tensor])
-    syntactic_tensor=syntactic_enhance([syntactic_tensor])
+    if len(inputs)==3:
+        layout_tensor,lexical_tensor,syntactic_tensor=inputs
+        layout_tensor=layout_enhance([layout_tensor])
+        lexical_tensor=lexical_enhance([lexical_tensor])
+        syntactic_tensor=syntactic_enhance([syntactic_tensor])
 
-    return [layout_tensor,lexical_tensor,syntactic_tensor]
+        return [layout_tensor,lexical_tensor,syntactic_tensor]
+    else:
+         # 新增符号特征版本
+        layout_tensor, lexical_tensor, syntactic_tensor, symbol_tensor = inputs
+        layout_tensor = layout_enhance([layout_tensor])
+        lexical_tensor = lexical_enhance([lexical_tensor])
+        syntactic_tensor = syntactic_enhance([syntactic_tensor])
+        symbol_tensor = symbol_enhance([symbol_tensor])
+        return [layout_tensor, lexical_tensor, syntactic_tensor, symbol_tensor]
 
 def prepare_main_dataset(dataset_dir,lang,list_author_handle,id_mapping,sp,forsee_dataset,raw_dataset,refine_dataset,lexical_file,syntactic_file):
     if os.path.exists(refine_dataset):

@@ -5,7 +5,7 @@ import torch.utils.data as torchdata
 from codesecurity.tasks.code_authorship_attribution.caches_manager import ForseeCachesMetatadata
 from codesecurity.tasks.code_authorship_attribution.preprocessing import DLCAISSuperParameter, ForseeSuperParameter
 from codesecurity.tasks.code_authorship_attribution.model import prepare_DLCAIS, prepare_forsee_model,prepare_independence_model,IndependenceModel
-from codesecurity.tasks.code_authorship_attribution.prepare_torch import ForseeLayoutDataset,ForseeLexicalDataset,ForseeSyntacticDataset,ForseePartialDataset,layout_enhance,lexical_enhance,syntactic_enhance,combine_enhance
+from codesecurity.tasks.code_authorship_attribution.prepare_torch import ForseeLayoutDataset,ForseeLexicalDataset,ForseeSyntacticDataset,ForseeSymbolDataset,ForseePartialDataset,layout_enhance,lexical_enhance,syntactic_enhance,symbol_enhance,combine_enhance
 
 
 
@@ -17,18 +17,61 @@ import numpy as np
 
 from collections.abc import Iterable
 
-def train_model(model:torch.nn.Module,training_data:torchdata.DataLoader,test_data:torchdata.DataLoader,device,loss_func=torch.nn.CrossEntropyLoss(),model_call_handle=None,out_file=None,epoch_number=150,lr=1e-3,weight_decay=0,reinforce=None):
+import logging
+import datetime
+
+# 配置日志记录
+def setup_logger(log_file=None):
+    if log_file is None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = f"training_log_{timestamp}.log"
+    
+    logger = logging.getLogger('model_training')
+    logger.setLevel(logging.INFO)
+    
+    # 清除所有现有的处理器
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    
+    # 创建文件处理器
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    
+    # 创建控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    # 设置格式
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # 添加处理器
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+# 初始化默认logger
+logger = setup_logger()
+
+def train_model(model:torch.nn.Module,training_data:torchdata.DataLoader,test_data:torchdata.DataLoader,device,loss_func=torch.nn.CrossEntropyLoss(),model_call_handle=None,out_file=None,epoch_number=150,lr=1e-3,weight_decay=0,reinforce=None, log_file=None):
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
 
     if model_call_handle is None:
         model_call_handle=lambda model,x:model(x[0])
 
-    highest_accuracy=eval_model(model,test_data,device,loss_func,model_call_handle)
+    highest_accuracy=eval_model(model,test_data,device,loss_func,model_call_handle,log_file)
 
     optimizer=torch.optim.Adam(model.parameters(),lr=lr,weight_decay=weight_decay)
 
     for i in range(epoch_number):
         total_number=0
-        print(f"epoch : {i}:")
+        # print(f"epoch : {i}:")
+        logger.info(f"epoch : {i}:")
         model.train()
 
         #total_test_loss=0
@@ -59,15 +102,18 @@ def train_model(model:torch.nn.Module,training_data:torchdata.DataLoader,test_da
 
                 total_accuracy+=(y.argmax(1).view(-1,1) == maxk[:,0:1]).sum().item()
                 total_number+=y.size(0)
-        print(f"train top1: {total_accuracy/total_number}")
+        # print(f"train top1: {total_accuracy/total_number}")
+        logger.info(f"train top1: {total_accuracy/total_number}")
 
         #model.eval()
-        now_accuary=eval_model(model,test_data,device,loss_func,model_call_handle)
+        now_accuary=eval_model(model,test_data,device,loss_func,model_call_handle,log_file)
 
         if out_file:
             if now_accuary>=highest_accuracy:
                 torch.save(model.state_dict(),out_file)
-                now_accuary=highest_accuracy
+                # 是否有错误？
+                highest_accuracy=now_accuary
+                #now_accuary=highest_accuracy
 
 def validate_model(model:torch.nn.Module,data:torchdata.DataLoader,device,model_call_handle=None):
     if model_call_handle is None:
@@ -85,8 +131,12 @@ def validate_model(model:torch.nn.Module,data:torchdata.DataLoader,device,model_
 
             yield y_hat,y
             
-def eval_model(model:torch.nn.Module,data:torchdata.DataLoader,device,loss_func=torch.nn.CrossEntropyLoss(),model_call_handle=None):
-
+def eval_model(model:torch.nn.Module,data:torchdata.DataLoader,device,loss_func=torch.nn.CrossEntropyLoss(),model_call_handle=None, log_file=None):
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
+        
     if model_call_handle is None:
         model_call_handle=lambda model,x:model(*x)
 
@@ -129,40 +179,75 @@ def eval_model(model:torch.nn.Module,data:torchdata.DataLoader,device,loss_func=
             # total_group_acc+=group_acc
             number_of_iter+=1
             total_number+=y.size(0)
-        print(f'loss :{total_test_loss/number_of_iter} top1:{total_accuracy/total_number} top5: {total_acc5/total_number}')
+        # print(f'loss :{total_test_loss/number_of_iter} top1:{total_accuracy/total_number} top5: {total_acc5/total_number}')
+        logger.info(f'loss :{total_test_loss/number_of_iter} top1:{total_accuracy/total_number} top5: {total_acc5/total_number}')
     
     return total_accuracy/total_number
 
 def forsee_call(model,x):
-    if isinstance(x,Iterable):
+    # if isinstance(x,Iterable):
+    #     return model(*x)
+    # else:
+    #     return model(x)
+    from codesecurity.utils.check_symbol_log import get_symbol_logger
+    check_logger = get_symbol_logger("forsee_call","forsee_call.log")
+    if isinstance(x, Iterable) and not isinstance(x, torch.Tensor):
+        # 检查是否包含4个特征
+        if len(x) >= 4:
+            layout_x, lexical_y, syntactic_z, symbol_k = x[:4]
+            
+            # 处理符号特征
+            if isinstance(symbol_k, list):
+                check_logger.info(f"符号特征是列表类型，尝试转换为张量")
+                try:
+                    symbol_k = torch.tensor(symbol_k, dtype=torch.float32)
+                    check_logger.info(f"转换后形状: {symbol_k.shape}")
+                except Exception as e:
+                    check_logger.error(f"转换失败: {e}")
+                    
+            # 使用处理后的特征调用模型
+            return model(layout_x, lexical_y, syntactic_z, symbol_k)
+        
+        # 如果特征数量不够，使用原始调用
         return model(*x)
     else:
         return model(x)
 
-def train_forsee(training_data,test_data,class_number,meta:ForseeCachesMetatadata,sp:ForseeSuperParameter,device=torch.device('cpu'),use_caches=True):
-    
+def train_forsee(training_data,test_data,class_number,meta:ForseeCachesMetatadata,sp:ForseeSuperParameter,device=torch.device('cpu'),use_caches=True,log_file=None):
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
+       
 
-    layout_model,lexical_model,syntactic_model=prepare_independence_model(sp,device,class_number)
+    layout_model,lexical_model,syntactic_model,symbol_model=prepare_independence_model(sp,device,class_number)
 
 
     if use_caches and os.path.exists(meta.layout_extractor):
         layout_model.load_state_dict(torch.load(meta.layout_extractor))
     layout_training_data=ForseeLayoutDataset(training_data)
     layout_test_data=ForseeLayoutDataset(test_data)
-    train_independence_model(layout_model,layout_training_data,layout_test_data,device,meta.layout_extractor,enhance=layout_enhance,epoch=200)
+    # 减少训练次数，方便调试
+    train_independence_model(layout_model,layout_training_data,layout_test_data,device,meta.layout_extractor,enhance=layout_enhance,epoch=20)
         
     if use_caches and os.path.exists(meta.lexical_extractor):
         lexical_model.load_state_dict(torch.load(meta.lexical_extractor))
     lexical_training_data=ForseeLexicalDataset(training_data)
     lexical_test_data=ForseeLexicalDataset(test_data)
-    train_independence_model(lexical_model,lexical_training_data,lexical_test_data,device,meta.lexical_extractor,enhance=lexical_enhance)
+    train_independence_model(lexical_model,lexical_training_data,lexical_test_data,device,meta.lexical_extractor,enhance=lexical_enhance,epoch=20)
         
     if use_caches and os.path.exists(meta.syntactic_extractor):
         syntactic_model.load_state_dict(torch.load(meta.syntactic_extractor))
 
     syntactic_training_data=ForseeSyntacticDataset(training_data)
     syntactic_test_data=ForseeSyntacticDataset(test_data)
-    train_independence_model(syntactic_model,syntactic_training_data,syntactic_test_data,device,meta.syntactic_extractor,enhance=syntactic_enhance)
+    train_independence_model(syntactic_model,syntactic_training_data,syntactic_test_data,device,meta.syntactic_extractor,enhance=syntactic_enhance,epoch=20)
+    # 训练符号模型
+    if use_caches and os.path.exists(meta.symbol_extractor):
+        symbol_model.load_state_dict(torch.load(meta.symbol_extractor))
+    symbol_training_data=ForseeSymbolDataset(training_data)
+    symbol_test_data=ForseeSymbolDataset(test_data)
+    train_independence_model(symbol_model,symbol_training_data,symbol_test_data,device,meta.symbol_extractor,enhance=symbol_enhance,epoch=200)
 
 
     preference_network=prepare_forsee_model(sp,device,class_number)
@@ -175,22 +260,28 @@ def train_forsee(training_data,test_data,class_number,meta:ForseeCachesMetatadat
     embeding_module.layout_extractor.load_state_dict(layout_model.extractor.state_dict())
     embeding_module.lexical_extractor.load_state_dict(lexical_model.extractor.state_dict())
     embeding_module.syntactic_extractor.load_state_dict(syntactic_model.extractor.state_dict())
-
+    embeding_module.symbol_extractor.load_state_dict(symbol_model.extractor.state_dict())
     embeding_module.requires_grad_(False)
-
+    #自动微分？
     preference_module.layout_w.requires_grad=False
     preference_module.syntactic_w.requires_grad=False
     preference_module.lexical_w.requires_grad=False
-    
+    preference_module.symbol_w.requires_grad=False
+
     training_data=torchdata.DataLoader(training_data,batch_size=sp.batch_size)
     test_data=torchdata.DataLoader(test_data,batch_size=sp.batch_size)
 
-    train_model(preference_network,training_data,test_data,device,model_call_handle=forsee_call,out_file=meta.preference_model,reinforce=combine_enhance)
+    train_model(preference_network,training_data,test_data,device,model_call_handle=forsee_call,out_file=meta.preference_model,reinforce=combine_enhance,log_file=log_file,epoch_number=20)
     
-    return preference_network,[layout_model,lexical_model,syntactic_model]
+    return preference_network,[layout_model,lexical_model,syntactic_model,symbol_model]
     
 
-def caa_patial_forsee_training(training_data,test_data,meta:ForseeCachesMetatadata,sp,class_number,device,use_layout,use_lexical,use_syntactic):
+def caa_patial_forsee_training(training_data,test_data,meta:ForseeCachesMetatadata,sp,class_number,device,use_layout,use_lexical,use_syntactic,log_file=None):
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
+        
     preference_model=caa_model.prepare_partial_forsee_model(sp,device,class_number,use_layout,use_lexical,use_syntactic)
     independent_models=caa_model.prepare_select_independence_models(sp,device,class_number,use_layout,use_lexical,use_syntactic)
     parameter_paths=[]
@@ -213,11 +304,16 @@ def caa_patial_forsee_training(training_data,test_data,meta:ForseeCachesMetatada
     training_data=torchdata.DataLoader(training_data,batch_size=sp.batch_size)
     test_data=torchdata.DataLoader(test_data,batch_size=sp.batch_size)
 
-    train_model(preference_model,training_data,test_data,device,model_call_handle=forsee_call,out_file=meta.partial_model(use_layout,use_lexical,use_syntactic))
+    train_model(preference_model,training_data,test_data,device,model_call_handle=forsee_call,out_file=meta.partial_model(use_layout,use_lexical,use_syntactic),log_file=log_file)
 
     return preference_model
 
-def caa_vanille_forsee_training(training_data,test_data,meta:ForseeCachesMetatadata,sp,class_number,device):
+def caa_vanille_forsee_training(training_data,test_data,meta:ForseeCachesMetatadata,sp,class_number,device,log_file=None):
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
+        
     preference_model=caa_model.prepare_forsee_model(sp,device,class_number)
 
     training_data=ForseePartialDataset(training_data,True,True,True)
@@ -226,28 +322,42 @@ def caa_vanille_forsee_training(training_data,test_data,meta:ForseeCachesMetatad
     training_data=torchdata.DataLoader(training_data,batch_size=sp.batch_size)
     test_data=torchdata.DataLoader(test_data,batch_size=sp.batch_size)
 
-    train_model(preference_model,training_data,test_data,device,model_call_handle=forsee_call,out_file=meta.vanille_preference_model)
+    train_model(preference_model,training_data,test_data,device,model_call_handle=forsee_call,out_file=meta.vanille_preference_model,log_file=log_file)
 
     return preference_model
 
-def train_independence_model(model,training_data,test_data,device=torch.device('cpu'),out_file=None,enhance=None,epoch=150):    
+def train_independence_model(model,training_data,test_data,device=torch.device('cpu'),out_file=None,enhance=None,epoch=150,log_file=None):    
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
+        
     training_data=torchdata.DataLoader(training_data,batch_size=64)
     test_data=torchdata.DataLoader(test_data,batch_size=64)
 
-    train_model(model,training_data,test_data,device,out_file=out_file,reinforce=enhance,epoch_number=epoch)
+    train_model(model,training_data,test_data,device,out_file=out_file,reinforce=enhance,epoch_number=epoch,log_file=log_file)
 
     return model
 
-def measure_model(model,training_data,test_data,device=torch.device('cpu'),enhance=None,epoch=150,model_call_handle=None):    
-    
+def measure_model(model,training_data,test_data,device=torch.device('cpu'),enhance=None,epoch=150,model_call_handle=None,log_file=None):    
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
+            
     training_data=torchdata.DataLoader(training_data,batch_size=64)
     test_data=torchdata.DataLoader(test_data,batch_size=64)
 
-    status=nn_api.measure_train_model(model,training_data,test_data,device,reinforce=enhance,epoch_number=epoch,model_call_handle=model_call_handle)
+    status=nn_api.measure_train_model(model,training_data,test_data,device,reinforce=enhance,epoch_number=epoch,model_call_handle=model_call_handle,log_file=log_file)
 
     return status
 
-def train_DLCAIS_nn(training_data,test_data,class_number,meta:ForseeCachesMetatadata,sp:DLCAISSuperParameter,device=torch.device('cpu'),use_caches=True):
+def train_DLCAIS_nn(training_data,test_data,class_number,meta:ForseeCachesMetatadata,sp:DLCAISSuperParameter,device=torch.device('cpu'),use_caches=True,log_file=None):
+    # 如果提供了log_file，重新配置logger
+    global logger
+    if log_file is not None:
+        logger = setup_logger(log_file)
+            
     model=prepare_DLCAIS(sp,device,class_number)
     if use_caches and os.path.exists(meta.DLCAIS):
         model.load_state_dict(torch.load(meta.DLCAIS))
@@ -255,7 +365,7 @@ def train_DLCAIS_nn(training_data,test_data,class_number,meta:ForseeCachesMetata
     training_data=torchdata.DataLoader(training_data,batch_size=sp.batch_size)
     test_data=torchdata.DataLoader(test_data,batch_size=sp.batch_size)
     
-    train_model(model,training_data,test_data,device,out_file=meta.DLCAIS,epoch_number=1000,lr=1e-4,weight_decay=0.00001)
+    train_model(model,training_data,test_data,device,out_file=meta.DLCAIS,epoch_number=1000,lr=1e-4,weight_decay=0.00001,log_file=log_file)
     return model
 
 def train_DLCAIS_RFC(training_data,test_data,class_number,meta:ForseeCachesMetatadata,sp:DLCAISSuperParameter,model=None,device=torch.device('cpu')):

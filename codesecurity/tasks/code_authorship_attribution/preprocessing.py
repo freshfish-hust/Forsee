@@ -12,7 +12,7 @@ import os
 
 from codesecurity.feature.objects import Ast, AstEdge
 from codesecurity.tasks.code_authorship_attribution.caches_manager import ForseeCachesMetatadata
-
+from codesecurity.tasks.code_authorship_attribution.symbol_layout import Symbol_Layout_feature
 
 def sample_is_good(common_feature:CommonFeatureSet):
     if common_feature is None: return False
@@ -63,13 +63,16 @@ class CAAFeatureBuilder:
             group_tokens=[]
             group_origin_paths=[]
             group_ast=[]
-            
+            group_symbols=[]
             common_features=do_parallel(pairs)
             
             for common_feature,sample_path in common_features:
                 if common_feature is None: continue
                 group_labels.append(self.get_id(sample_label))
                 group_codewaves.append(CAAFeatureBuilder.get_codewave(sample_path))
+                # 添加符号特征
+                symbol_test = Symbol_Layout_feature()
+                group_symbols.append(symbol_test.extarct_features_from_file(sample_path))
                 group_tokens.append(common_feature.tokens)
                 group_origin_paths.append(sample_path)
                 group_ast.append(common_feature.ast_object)
@@ -81,7 +84,7 @@ class CAAFeatureBuilder:
 
             print(f"good sample for {sample_label}: {counter}/{len(sample_paths)}")
     
-            yield group_tokens,group_ast,group_codewaves,group_origin_paths,group_labels
+            yield group_tokens,group_ast,group_codewaves,group_origin_paths,group_labels,group_symbols
 
     def get_id(self,label):       
         if label not in self.label2id:
@@ -154,6 +157,7 @@ class ForseeSuperParameter:
     lexical_vector_dim:int=0
     syntactic_vector_dim:int=0
     layout_vector_dim:int=0
+    symbol_vector_dim:int=0
 
     lex_hidden_dim:int=0
     lex_channel:int=0
@@ -166,6 +170,9 @@ class ForseeSuperParameter:
     
     lay_max_value:int=256
     
+    symbol_hidden_dim:int=0
+    symbol_channel:int=0
+
     batch_size:int=128
     lr:float=0.001
 
@@ -241,6 +248,8 @@ class ForseeSuperParameter:
         obj.lexical_vector_dim=4500
         obj.syntactic_vector_dim=2500
         obj.layout_vector_dim=256
+        # 添加符号特征
+        obj.symbol_vector_dim=85
 
         obj.lex_channel=16
         obj.lex_hidden_dim=128
@@ -248,7 +257,9 @@ class ForseeSuperParameter:
         obj.syn_hidden_dim=128
         obj.lay_channel=16
         obj.lay_hidden_dim=256
-
+        # 添加符号特征
+        obj.symbol_channel=16
+        obj.symbol_hidden_dim=256
         return obj
 
     @staticmethod
@@ -289,23 +300,90 @@ class ForseeFeatureBuilder:
         self.syntactic_tfidf=syntactic_tfidf
 
 
-    def build(self,group_tokens,group_ast,group_codewaves,group_origin_paths,group_labels):
+    def build(self,group_tokens,group_ast,group_codewaves,group_origin_paths,group_labels,group_symbols):
         group_ast=self.syntactic_feature(group_ast)
         group_tokens=self.lexical_feature(group_tokens)
         group_codewaves=self.layout_feature(group_codewaves)
+        group_symbols=self.symbol_feature(group_symbols)
         feature_objs=[]
+        # 日志纠错
+        # from codesecurity.utils.check_symbol_log import get_symbol_logger
+        # logger=get_symbol_logger("ForseeFeatureBuilder","get_symbol_in_build")
+        # logger.var_info(group_codewaves[0])
+        # logger.var_info(group_symbols[0])
+        
         for i in range(len(group_labels)):
             feature_obj=ForseeFeature(
                 lexical=group_tokens[i],
                 syntactic=group_ast[i],
                 layout=group_codewaves[i],
                 origin_path=group_origin_paths[i],
-                label=group_labels[i]
+                label=group_labels[i],
+                #添加符号特征
+                symbol=group_symbols[i]
             )
             feature_objs.append(feature_obj)
 
         return feature_objs
     
+    def symbol_feature(self,group_symbols):
+        """
+        处理符号特征，将多维特征向量转换为固定长度的向量
+        
+        Args:
+            group_symbols: 符号特征列表，每个元素是形状为 (n_vectors, 14) 的特征向量列表
+        
+        Returns:
+            处理后的符号特征列表
+        """
+        symbol_features = [None] * len(group_symbols)#30
+        
+        for i in range(len(group_symbols)):
+            symbol_data = group_symbols[i]
+            
+            if symbol_data is None or len(symbol_data) == 0:
+                # 如果没有符号特征，创建零向量
+                symbol_features[i] = np.zeros(self.sp.symbol_vector_dim)
+                continue
+            
+            # 将符号特征向量列表转换为numpy数组
+            symbol_vectors = np.array(symbol_data)  # shape: (n_vectors, 14)
+            
+            # 方法1: 统计特征 - 计算每个维度的统计信息
+            if len(symbol_vectors.shape) == 2:
+                # 计算统计特征: 均值、标准差、最大值、最小值、总和
+                mean_features = np.mean(symbol_vectors, axis=0)  # 14维
+                std_features = np.std(symbol_vectors, axis=0)    # 14维
+                max_features = np.max(symbol_vectors, axis=0)    # 14维
+                min_features = np.min(symbol_vectors, axis=0)    # 14维
+                sum_features = np.sum(symbol_vectors, axis=0)    # 14维
+                
+                # 额外的全局统计特征
+                total_symbols = len(symbol_vectors)              # 1维
+                non_zero_count = np.count_nonzero(symbol_vectors, axis=0)  # 14维
+                
+                # 组合所有特征
+                combined_features = np.concatenate([
+                    mean_features, std_features, max_features, 
+                    min_features, sum_features, non_zero_count,
+                    [total_symbols]
+                ])  # 总共: 14*6 + 1 = 85维
+            else:
+                # 如果是一维向量，直接使用
+                combined_features = symbol_vectors.flatten()
+            
+            # 调整到目标维度
+            if len(combined_features) > self.sp.symbol_vector_dim:
+                # 截断到目标维度
+                symbol_features[i] = combined_features[:self.sp.symbol_vector_dim]
+            elif len(combined_features) < self.sp.symbol_vector_dim:
+                # 填充到目标维度
+                symbol_features[i] = np.pad(combined_features, 
+                                        [0, self.sp.symbol_vector_dim - len(combined_features)])
+            else:
+                symbol_features[i] = combined_features
+        
+        return symbol_features
     def layout_feature(self,group_codewaves):
     
         layout=[None]*len(group_codewaves)
@@ -367,12 +445,13 @@ class ForseeFeatureBuilder:
         return ForseeFeatures(samples,batch_group.addon)
     
 class ForseeFeature:
-    def __init__(self,origin_path,layout,lexical,syntactic,label) -> None:
+    def __init__(self,origin_path,layout,lexical,syntactic,label,symbol) -> None:
         self.origin_paths=origin_path
         self.layout=layout
         self.lexical=lexical
         self.syntactic=syntactic
         self.label=label
+        self.symbol=symbol
 
 class ForseeFeatures:
     def __init__(self,samples:list[ForseeFeature],id_mapping) -> None:
@@ -436,7 +515,7 @@ def prepare_forsee_features(dataset_dir,meta:ForseeCachesMetatadata,sp:ForseeSup
     lexical_module=TfidfModule()
     syntactic_module=TfidfModule()
     for group in caa_feature_builder.iter_group():
-        group_tokens,group_ast,group_codewaves,group_origin_paths,group_labels=group
+        group_tokens,group_ast,group_codewaves,group_origin_paths,group_labels,group_symbols=group
         lexical_module.add_documents(group_tokens)
         syntactic_module.add_documents([type_pair(e) for e in group_ast])
         group_pipe.add_group(group)

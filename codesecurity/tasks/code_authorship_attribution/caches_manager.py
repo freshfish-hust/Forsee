@@ -22,6 +22,8 @@ class ForseeCachesMetatadata:
     layout_extractor:str=""
     lexical_extractor:str=""
     syntactic_extractor:str=""
+    # 添加符号提取器
+    symbol_extractor:str=""
 
     preference_model:str=""
     vanille_preference_model:str=""
@@ -66,7 +68,9 @@ class ForseeCachesMetatadata:
         obj.layout_extractor=os.path.join(caches_dir,'layout_extractor.pt')
         obj.lexical_extractor=os.path.join(caches_dir,'lexical_extractor.pt')
         obj.syntactic_extractor=os.path.join(caches_dir,'syntactic_extractor.pt')
-        
+        #添加符号提取器 
+        obj.symbol_extractor=os.path.join(caches_dir,'symbol_extractor.pt')
+
         obj.tokens_file=os.path.join(caches_dir,'tokens.pt')
         obj.asts_file=os.path.join(caches_dir,'ast_dump.pt')
 
