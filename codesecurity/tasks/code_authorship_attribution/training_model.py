@@ -223,25 +223,25 @@ def train_forsee(training_data,test_data,class_number,meta:ForseeCachesMetatadat
     layout_model,lexical_model,syntactic_model,symbol_model=prepare_independence_model(sp,device,class_number)
 
 
-    if use_caches and os.path.exists(meta.layout_extractor):
-        layout_model.load_state_dict(torch.load(meta.layout_extractor))
-    layout_training_data=ForseeLayoutDataset(training_data)
-    layout_test_data=ForseeLayoutDataset(test_data)
-    # 减少训练次数，方便调试
-    train_independence_model(layout_model,layout_training_data,layout_test_data,device,meta.layout_extractor,enhance=layout_enhance,epoch=20)
+    # if use_caches and os.path.exists(meta.layout_extractor):
+    #     layout_model.load_state_dict(torch.load(meta.layout_extractor))
+    # layout_training_data=ForseeLayoutDataset(training_data)
+    # layout_test_data=ForseeLayoutDataset(test_data)
+    # # 减少训练次数，方便调试
+    # train_independence_model(layout_model,layout_training_data,layout_test_data,device,meta.layout_extractor,enhance=layout_enhance,epoch=20)
         
-    if use_caches and os.path.exists(meta.lexical_extractor):
-        lexical_model.load_state_dict(torch.load(meta.lexical_extractor))
-    lexical_training_data=ForseeLexicalDataset(training_data)
-    lexical_test_data=ForseeLexicalDataset(test_data)
-    train_independence_model(lexical_model,lexical_training_data,lexical_test_data,device,meta.lexical_extractor,enhance=lexical_enhance,epoch=20)
+    # if use_caches and os.path.exists(meta.lexical_extractor):
+    #     lexical_model.load_state_dict(torch.load(meta.lexical_extractor))
+    # lexical_training_data=ForseeLexicalDataset(training_data)
+    # lexical_test_data=ForseeLexicalDataset(test_data)
+    # train_independence_model(lexical_model,lexical_training_data,lexical_test_data,device,meta.lexical_extractor,enhance=lexical_enhance,epoch=20)
         
-    if use_caches and os.path.exists(meta.syntactic_extractor):
-        syntactic_model.load_state_dict(torch.load(meta.syntactic_extractor))
+    # if use_caches and os.path.exists(meta.syntactic_extractor):
+    #     syntactic_model.load_state_dict(torch.load(meta.syntactic_extractor))
 
-    syntactic_training_data=ForseeSyntacticDataset(training_data)
-    syntactic_test_data=ForseeSyntacticDataset(test_data)
-    train_independence_model(syntactic_model,syntactic_training_data,syntactic_test_data,device,meta.syntactic_extractor,enhance=syntactic_enhance,epoch=20)
+    # syntactic_training_data=ForseeSyntacticDataset(training_data)
+    # syntactic_test_data=ForseeSyntacticDataset(test_data)
+    # train_independence_model(syntactic_model,syntactic_training_data,syntactic_test_data,device,meta.syntactic_extractor,enhance=syntactic_enhance,epoch=20)
     # 训练符号模型
     if use_caches and os.path.exists(meta.symbol_extractor):
         symbol_model.load_state_dict(torch.load(meta.symbol_extractor))

@@ -5,7 +5,7 @@ from codesecurity.feature import CommonFeatureSet,TfidfModule
 from codesecurity.feature.api import read_bytes,create_ast_obj
 from codesecurity.data.api import list_dataset,GroupPipe,pickle_load,list_all_file_in_dir
 from codesecurity.data.parallel import do_parallel
-
+from codesecurity.utils.check_symbol_log import get_symbol_logger
 import pickle
 import numpy as np
 import os
@@ -13,7 +13,8 @@ import os
 from codesecurity.feature.objects import Ast, AstEdge
 from codesecurity.tasks.code_authorship_attribution.caches_manager import ForseeCachesMetatadata
 from codesecurity.tasks.code_authorship_attribution.symbol_layout import Symbol_Layout_feature
-
+#添加日志记录
+logger = get_symbol_logger("check_shape_symbol_layout")
 def sample_is_good(common_feature:CommonFeatureSet):
     if common_feature is None: return False
     # token number > 20
@@ -169,7 +170,8 @@ class ForseeSuperParameter:
     lay_channel:int=0
     
     lay_max_value:int=256
-    
+    # 添加符号特征
+    symbol_max_value:int=256
     symbol_hidden_dim:int=0
     symbol_channel:int=0
 
@@ -248,9 +250,12 @@ class ForseeSuperParameter:
         obj.lexical_vector_dim=4500
         obj.syntactic_vector_dim=2500
         obj.layout_vector_dim=256
-        # 添加符号特征
-        obj.symbol_vector_dim=85
-
+        # 添加符号特征--方法一
+        obj.symbol_vector_dim=151
+        #添加符号特征 -- 方法二
+        #obj.symbol_vector_dim=256
+        
+        
         obj.lex_channel=16
         obj.lex_hidden_dim=128
         obj.syn_channel=16
@@ -326,7 +331,40 @@ class ForseeFeatureBuilder:
 
         return feature_objs
     
+    def pre_proc_sym(self,group_symbols):
+        processed_layouts = [None] * len(group_symbols)
+        logger.var_info(group_symbols,"group_symbols in pre_proc_sym")
+        for i in range(len(processed_layouts)):
+            # symbol_counts_for_one_type 指的是某一种符号在所有行中的出现次数列表
+            # 这就相当于学长代码中的一个 codewave
+            symbol_counts_for_one_type = group_symbols[i]
+            
+            # 转换为 NumPy 数组
+            v = np.array(symbol_counts_for_one_type)
+            
+            # 1. 截断计数值 (Clipping)
+            # 将符号的计数值限制在 [0, sp.symbol_max_value] 范围内
+            # 如果你的符号计数永远不会超过某个合理值，或者你不想做这种截断，可以注释掉下面这行。
+            v = np.clip(v, 0, self.sp.symbol_max_value)
+
+            # 2. 调整向量维度 (Padding/Truncating)
+            current_len = len(v)
+            target_len = self.sp.symbol_vector_dim
+
+            if current_len > target_len:
+                # 如果当前特征向量比目标维度长，则截断
+                v = v[:target_len]
+            elif current_len < target_len:
+                # 如果当前特征向量比目标维度短，则用0填充
+                # np.pad 的第二个参数是一个元组 (before, after)，表示在数组前后填充的数量
+                v = np.pad(v, (0, target_len - current_len), 'constant', constant_values=0)
+                
+            processed_layouts[i] = v
+            
+        return processed_layouts
     def symbol_feature(self,group_symbols):
+        # 方法一
+        
         """
         处理符号特征，将多维特征向量转换为固定长度的向量
         
@@ -352,22 +390,22 @@ class ForseeFeatureBuilder:
             # 方法1: 统计特征 - 计算每个维度的统计信息
             if len(symbol_vectors.shape) == 2:
                 # 计算统计特征: 均值、标准差、最大值、最小值、总和
-                mean_features = np.mean(symbol_vectors, axis=0)  # 14维
-                std_features = np.std(symbol_vectors, axis=0)    # 14维
-                max_features = np.max(symbol_vectors, axis=0)    # 14维
-                min_features = np.min(symbol_vectors, axis=0)    # 14维
-                sum_features = np.sum(symbol_vectors, axis=0)    # 14维
+                mean_features = np.mean(symbol_vectors, axis=1)  # 30维
+                std_features = np.std(symbol_vectors, axis=1)    # 30维
+                max_features = np.max(symbol_vectors, axis=1)    # 30维
+                #min_features = np.min(symbol_vectors, axis=1)    # 30维
+                sum_features = np.sum(symbol_vectors, axis=1)    # 30维
                 
                 # 额外的全局统计特征
-                total_symbols = len(symbol_vectors)              # 1维
-                non_zero_count = np.count_nonzero(symbol_vectors, axis=0)  # 14维
+                total_symbols = len(symbol_vectors[0])              # 1维
+                non_zero_count = np.count_nonzero(symbol_vectors, axis=1)  # 30维
                 
                 # 组合所有特征
                 combined_features = np.concatenate([
                     mean_features, std_features, max_features, 
-                    min_features, sum_features, non_zero_count,
+                     sum_features, non_zero_count,
                     [total_symbols]
-                ])  # 总共: 14*6 + 1 = 85维
+                ])  # 总共: 30*5 + 1 = 151维
             else:
                 # 如果是一维向量，直接使用
                 combined_features = symbol_vectors.flatten()
@@ -384,8 +422,15 @@ class ForseeFeatureBuilder:
                 symbol_features[i] = combined_features
         
         return symbol_features
-    def layout_feature(self,group_codewaves):
+        
+        # 方法二
+        # processed_sym_features = self.pre_proc_sym(group_symbols)
+        # logger.var_info(processed_sym_features,"processed_sym_features in symbol_feature")
+        # return np.sum(processed_sym_features, axis=0)
     
+    
+    def layout_feature(self,group_codewaves):
+        logger.var_info(group_codewaves,"group_codewaves in layout_feature")
         layout=[None]*len(group_codewaves)
         
         for i in range(len(layout)):
